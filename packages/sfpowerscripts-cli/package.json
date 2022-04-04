@@ -39,12 +39,15 @@
         "simple-git": "3.5.0"
     },
     "devDependencies": {
+        "@salesforce/cli-plugins-testkit": "^1.5.28",
         "@types/adm-zip": "^0.4.33",
         "@types/jest": "27.4.1",
         "@types/jsforce": "^1.9.29",
         "@types/marked": "4.0.2",
         "dependency-cruiser": "^10.0.1",
         "jest": "^27.5.1",
+        "mocha": "^9.2.2",
+        "nyc": "^15.1.0",
         "snyk": "^1.826.0",
         "ts-jest": "27.1.4",
         "ts-node": "10.7.0",
@@ -117,7 +120,9 @@
         "clean": "rimraf ./lib && rimraf tsconfig.tsbuildinfo",
         "compile": "tsc -b tsconfig.json",
         "snyk-protect": "snyk protect",
-        "test": "FORCE_COLOR=true jest --verbose --coverage --detectOpenHandles"
+        "test": "FORCE_COLOR=true jest --verbose --coverage --detectOpenHandles ./test",
+        "nut": "FORCE_COLOR=true jest  --testTimeout 1800000 --verbose false  ./nut-tests",
+        "nut2": "nyc mocha nut-tests/prepare.nut.test.ts --slow 4500 --timeout 600000 --parallel"
     },
     "snyk": true
 }

@@ -43,7 +43,6 @@ export interface DeployProps {
     isTestsToBeTriggered: boolean;
     skipIfPackageInstalled: boolean;
     logsGroupSymbol?: string[];
-    coverageThreshold?: number;
     waitTime: number;
     tags?: any;
     packageLogger?: Logger;
@@ -54,6 +53,7 @@ export interface DeployProps {
     promotePackagesBeforeDeploymentToOrg?: string;
     devhubUserName?: string;
     disableArtifactCommit?: boolean;
+    isFastFeedbackMode?:boolean;
 }
 
 export default class DeployImpl {
@@ -655,7 +655,7 @@ export default class DeployImpl {
                 : null,
             this.props.deploymentMode === DeploymentMode.SOURCEPACKAGES_PUSH
                 ? DeploymentType.SOURCE_PUSH
-                : DeploymentType.MDAPI_DEPLOY,
+                : this.props.isFastFeedbackMode?DeploymentType.SELECTIVE_MDAPI_DEPLOY:DeploymentType.MDAPI_DEPLOY,
             this.props.isDryRun
         );
         installSourcePackageImpl.isArtifactToBeCommittedInOrg = !this.props.disableArtifactCommit;

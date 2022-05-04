@@ -34,11 +34,16 @@ import PoolOrgDeleteImpl from '@dxatscale/sfpowerscripts.core/lib/scratchorg/poo
 import SFPOrg from '@dxatscale/sfpowerscripts.core/lib/org/SFPOrg';
 import SFPPackage from '@dxatscale/sfpowerscripts.core/lib/package/SFPPackage';
 import { TestOptions } from '@dxatscale/sfpowerscripts.core/lib/apextest/TestOptions';
-import { RunAllTestsInPackageOptions } from '@dxatscale/sfpowerscripts.core/lib/apextest/TestOptions';
+import {
+    RunAllTestsInPackageOptions,
+    RunSpecifiedTestsOption,
+} from '@dxatscale/sfpowerscripts.core/lib/apextest/TestOptions';
 import { CoverageOptions } from '@dxatscale/sfpowerscripts.core/lib/apex/coverage/IndividualClassCoverage';
 import TriggerApexTests from '@dxatscale/sfpowerscripts.core/lib/apextest/TriggerApexTests';
 import getFormattedTime from '@dxatscale/sfpowerscripts.core/lib/utils/GetFormattedTime';
 import { PostDeployHook } from '../deploy/PostDeployHook';
+import ImpactedApexTestClassFetcher from '@dxatscale/sfpowerscripts.core/lib/apextest/ImpactedApexTestClassFetcher';
+import * as rimraf from 'rimraf';
 
 export enum ValidateMode {
     ORG,
@@ -60,6 +65,7 @@ export interface ValidateProps {
     isDependencyAnalysis?: boolean;
     diffcheck?: boolean;
     disableArtifactCommit?: boolean;
+    isFastFeedbackMode?: boolean;
 }
 
 export default class ValidateImpl implements PostDeployHook {
@@ -70,16 +76,20 @@ export default class ValidateImpl implements PostDeployHook {
     constructor(private props: ValidateProps) {}
 
     public async exec(): Promise<ValidateResult> {
+
+        rimraf.sync('artifacts');
+
         let scratchOrgUsername: string;
         try {
             if (this.props.validateMode === ValidateMode.ORG) {
                 scratchOrgUsername = this.props.targetOrg;
             } else if (this.props.validateMode === ValidateMode.POOL) {
-                scratchOrgUsername = await this.fetchScratchOrgFromPool(this.props.pools);
-                if (this.props.shapeFile) {
-                    this.deployShapeFile(this.props.shapeFile, scratchOrgUsername);
-                }
-                await this.installPackageDependencies(scratchOrgUsername);
+                if(process.env.SFPOWERSCRIPTS_DEBUG_PREFETCHED_SCRATCHORG)
+                    scratchOrgUsername = process.env.SFPOWERSCRIPTS_DEBUG_PREFETCHED_SCRATCHORG
+                else
+                    scratchOrgUsername = await this.fetchScratchOrgFromPool(this.props.pools);
+                if(!this.props.isFastFeedbackMode)
+                  await this.installPackageDependencies(scratchOrgUsername);
             } else throw new Error(`Unknown mode ${this.props.validateMode}`);
 
             //Create Org
@@ -239,10 +249,10 @@ export default class ValidateImpl implements PostDeployHook {
             deploymentMode: DeploymentMode.SOURCEPACKAGES,
             isTestsToBeTriggered: true,
             skipIfPackageInstalled: false,
-            coverageThreshold: this.props.coverageThreshold,
             logsGroupSymbol: this.props.logsGroupSymbol,
             currentStage: Stage.VALIDATE,
             disableArtifactCommit: this.props.disableArtifactCommit,
+            isFastFeedbackMode:this.props.isFastFeedbackMode
         };
 
         let deployImpl: DeployImpl = new DeployImpl(deployProps);
@@ -269,20 +279,39 @@ export default class ValidateImpl implements PostDeployHook {
 
         if (!sfpPackage.isApexInPackage) return { id: null, result: true, message: 'No Tests To Run' };
 
-        SFPLogger.log(
-            COLOR_HEADER(`-------------------------------------------------------------------------------------------`)
-        );
-        SFPLogger.log(`Triggering Apex tests for ${sfpPackage.package_name}`, LoggerLevel.INFO);
-        SFPLogger.log(
-            COLOR_HEADER(`-------------------------------------------------------------------------------------------`)
-        );
+      
+        let testOptions: TestOptions, testCoverageOptions: CoverageOptions;
 
-        let testOptions: TestOptions = new RunAllTestsInPackageOptions(sfpPackage, 60, '.testresults');
-        let testCoverageOptions: CoverageOptions = {
-            isIndividualClassCoverageToBeValidated: false,
-            isPackageCoverageToBeValidated: !sfpPackage.packageDescriptor.skipCoverageValidation,
-            coverageThreshold: this.props.coverageThreshold || 75,
-        };
+        if (!this.props.isFastFeedbackMode) {
+            this.displayTestHeader(sfpPackage);
+            testOptions = new RunAllTestsInPackageOptions(sfpPackage, 60, '.testresults');
+            testCoverageOptions = {
+                isIndividualClassCoverageToBeValidated: false,
+                isPackageCoverageToBeValidated: !sfpPackage.packageDescriptor.skipCoverageValidation,
+                coverageThreshold: this.props.coverageThreshold || 75,
+            };
+        } else {
+           
+            let changedComponents = await this.getChangedComponents();
+            let impactedApexTestClassFetcher: ImpactedApexTestClassFetcher = new ImpactedApexTestClassFetcher(
+                sfpPackage,
+                changedComponents,
+                this.logger
+            );
+
+            let impactedTestClasses = await impactedApexTestClassFetcher.getImpactedTestClasses();
+            if (impactedTestClasses.length == 0)
+                return { id: null, result: true, message: 'No Apex Classes were impacted, Skipping Tests' };
+
+            this.displayTestHeader(sfpPackage);
+            SFPLogger.log(`${COLOR_HEADER('Fast Feedback Mode activated, Only impacted test class will be triggered')}`)
+            testOptions = new RunSpecifiedTestsOption(60, '.testResults', impactedTestClasses.join(), sfpPackage.packageDescriptor.testSynchronous);
+            testCoverageOptions = {
+                isIndividualClassCoverageToBeValidated: false,
+                isPackageCoverageToBeValidated: false,
+                coverageThreshold:0
+            };
+        }
 
         let triggerApexTests: TriggerApexTests = new TriggerApexTests(
             targetUsername,
@@ -293,6 +322,16 @@ export default class ValidateImpl implements PostDeployHook {
         );
 
         return triggerApexTests.exec();
+    }
+
+    private displayTestHeader(sfpPackage: SFPPackage) {
+        SFPLogger.log(
+            COLOR_HEADER(`-------------------------------------------------------------------------------------------`)
+        );
+        SFPLogger.log(`Triggering Apex tests for ${sfpPackage.package_name}`, LoggerLevel.INFO);
+        SFPLogger.log(
+            COLOR_HEADER(`-------------------------------------------------------------------------------------------`)
+        );
     }
 
     private async buildChangedSourcePackages(packagesToCommits: { [p: string]: string }): Promise<any> {
@@ -487,6 +526,7 @@ export default class ValidateImpl implements PostDeployHook {
         //Trigger Tests after installation of each package
         if (sfpPackage.packageType && sfpPackage.packageType != 'data') {
             if (packageInstallationResult.result === PackageInstallationStatus.Succeeded) {
+                //Get Changed Components
                 let testResult = await this.triggerApexTests(sfpPackage, targetUsername, this.logger);
                 return { isToFailDeployment: !testResult.result, message: testResult.message };
             }
